@@ -1,0 +1,427 @@
+-- PC Controls: Q for lock and Q to unlock
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Updated prediction values
+local X = 0.116
+local Y = 0.1165
+local AirOffset = 0.117
+local FallOffset = 0.1175
+local Prediction = 0.118
+
+-- UI Creation Function
+function CreateUI()
+    -- UI Setup
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "kaydenccGui"
+    ScreenGui.Parent = game.CoreGui
+    ScreenGui.ResetOnSpawn = false
+
+    -- Main container for draggable UI
+    local MainContainer = Instance.new("Frame")
+    MainContainer.Name = "MainContainer"
+    MainContainer.Size = UDim2.new(0, 140, 0, 60)
+    MainContainer.Position = UDim2.new(0, 10, 0, 10)
+    MainContainer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    MainContainer.BorderColor3 = Color3.fromRGB(60, 60, 60)
+    MainContainer.BorderSizePixel = 2
+    MainContainer.ZIndex = 2
+    MainContainer.Parent = ScreenGui
+
+    -- Lock Button
+    local LockButton = Instance.new("TextButton")
+    LockButton.Name = "kaydenccButton"
+    LockButton.Size = UDim2.new(1, -10, 1, -10)
+    LockButton.Position = UDim2.new(0, 5, 0, 5)
+    LockButton.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    LockButton.BorderColor3 = Color3.fromRGB(60, 60, 60)
+    LockButton.BorderSizePixel = 2
+    LockButton.Text = "kayden-cc"
+    LockButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    LockButton.Font = Enum.Font.GothamBold
+    LockButton.TextSize = 16
+    LockButton.ZIndex = 3
+    LockButton.Parent = MainContainer
+
+    -- Button gradient effect
+    local ButtonGradient = Instance.new("UIGradient")
+    ButtonGradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 0, 0)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 0, 0))
+    }
+    ButtonGradient.Rotation = 90
+    ButtonGradient.Parent = LockButton
+
+    -- Lock symbol (appears when locked on target)
+    local LockSymbol = Instance.new("ImageLabel")
+    LockSymbol.Name = "LockSymbol"
+    LockSymbol.Size = UDim2.new(0, 40, 0, 40)
+    LockSymbol.AnchorPoint = Vector2.new(0.5, 0.5)
+    LockSymbol.BackgroundTransparency = 1
+    LockSymbol.Image = "rbxassetid://11305923967" -- Lock icon
+    LockSymbol.Visible = false
+    LockSymbol.ZIndex = 7
+    LockSymbol.Parent = ScreenGui
+
+    -- Variables
+    local Dragging = false
+    local DragStartPosition
+    local ContainerStartPosition
+    local LockedOnTarget = nil
+    local LockEnabled = false
+    local TargetConnection = nil
+    local TouchInput = nil
+    local CombatHook = nil
+    local LastHitTime = 0
+    local HitCooldown = 0.1 -- Cooldown between hits in seconds
+
+    -- Make container draggable with both mouse and touch
+    local function EnableDragging(frame)
+        local function onInputBegan(input, processed)
+            if processed then return end
+            
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                Dragging = true
+                DragStartPosition = input.Position
+                ContainerStartPosition = frame.Position
+                
+                -- Store touch input for tracking
+                if input.UserInputType == Enum.UserInputType.Touch then
+                    TouchInput = input
+                end
+                
+                -- Visual feedback when pressed
+                LockButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+            end
+        end
+        
+        local function onInputEnded(input, processed)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                Dragging = false
+                LockButton.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+                
+                -- Clear touch input
+                if input.UserInputType == Enum.UserInputType.Touch then
+                    TouchInput = nil
+                    TouchStartPosition = nil
+                end
+            end
+        end
+        
+        -- Connect input events
+        frame.InputBegan:Connect(onInputBegan)
+        frame.InputEnded:Connect(onInputEnded)
+        UserInputService.InputEnded:Connect(onInputEnded)
+        
+        -- Handle input changes for both mouse and touch
+        UserInputService.InputChanged:Connect(function(input)
+            if Dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or 
+               (input.UserInputType == Enum.UserInputType.Touch and input == TouchInput)) then
+                local delta = input.Position - DragStartPosition
+                frame.Position = UDim2.new(
+                    ContainerStartPosition.X.Scale, 
+                    ContainerStartPosition.X.Offset + delta.X,
+                    ContainerStartPosition.Y.Scale, 
+                    ContainerStartPosition.Y.Offset + delta.Y
+                )
+            end
+        end)
+    end
+
+    -- Enable dragging for the main container
+    EnableDragging(MainContainer)
+
+    -- Calculate predicted position with new prediction values
+    local function CalculatePredictedPosition(targetCharacter)
+        local humanoidRootPart = targetCharacter:FindFirstChild("HumanoidRootPart")
+        local humanoid = targetCharacter:FindFirstChild("Humanoid")
+        
+        if not humanoidRootPart or not humanoid then
+            return humanoidRootPart and humanoidRootPart.Position or nil
+        end
+        
+        local targetPosition = humanoidRootPart.Position
+        local targetVelocity = humanoidRootPart.Velocity
+        
+        -- Base prediction with new value
+        local predictedPosition = targetPosition + (targetVelocity * Prediction)
+        
+        -- Apply X and Y offsets with new values
+        predictedPosition = predictedPosition + Vector3.new(X, Y, 0)
+        
+        -- Apply movement state offsets with new values
+        if humanoid:GetState() == Enum.HumanoidStateType.Freefall then
+            predictedPosition = predictedPosition + Vector3.new(0, AirOffset, 0)
+        elseif humanoid:GetState() == Enum.HumanoidStateType.FallingDown then
+            predictedPosition = predictedPosition + Vector3.new(0, FallOffset, 0)
+        end
+        
+        return predictedPosition
+    end
+
+    -- Find the player the camera is looking at (MODIFIED TO LOCK THROUGH WALLS)
+    local function FindPlayerInSight()
+        local closestPlayer = nil
+        local closestDistance = math.huge
+        
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                local humanoidRootPart = player.Character:FindFirstChild("HumanoidRootPart")
+                local humanoid = player.Character:FindFirstChild("Humanoid")
+                
+                if humanoidRootPart and humanoid and humanoid.Health > 0 then
+                    -- Check if player is in field of view (REMOVED WALL CHECK)
+                    local screenPoint, onScreen = Camera:WorldToViewportPoint(humanoidRootPart.Position)
+                    
+                    if onScreen then
+                        -- Calculate distance from center of screen
+                        local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                        local playerPos = Vector2.new(screenPoint.X, screenPoint.Y)
+                        local distance = (center - playerPos).Magnitude
+                        
+                        -- Check if player is within a reasonable FOV (60 degrees)
+                        local maxFovDistance = 500
+                        if distance < maxFovDistance then
+                            -- REMOVED RAYCAST CHECK TO ALLOW LOCKING THROUGH WALLS
+                            if distance < closestDistance then
+                                closestDistance = distance
+                                closestPlayer = player
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        return closestPlayer, closestDistance
+    end
+
+    -- Get the aim position with new prediction
+    local function GetAimPosition(character)
+        local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+        
+        if humanoidRootPart then
+            -- Use new prediction system to calculate aim position
+            return CalculatePredictedPosition(character)
+        end
+        
+        return nil
+    end
+
+    -- Hook into combat system for 100% hit rate at all distances
+    local function SetupCombatHook()
+        if CombatHook then
+            CombatHook:Disconnect()
+            CombatHook = nil
+        end
+        
+        CombatHook = RunService.Heartbeat:Connect(function()
+            if LockEnabled and LockedOnTarget and LockedOnTarget.Character then
+                local humanoid = LockedOnTarget.Character:FindFirstChildOfClass("Humanoid")
+                local humanoidRootPart = LockedOnTarget.Character:FindFirstChild("HumanoidRootPart")
+                
+                if humanoid and humanoidRootPart then
+                    -- Check cooldown to prevent spamming
+                    local currentTime = tick()
+                    if currentTime - LastHitTime < HitCooldown then
+                        return
+                    end
+                    LastHitTime = currentTime
+                    
+                    -- Get player's character
+                    local localChar = LocalPlayer.Character
+                    if not localChar then return end
+                    
+                    local localHumanoid = localChar:FindFirstChildOfClass("Humanoid")
+                    if not localHumanoid then return end
+                    
+                    -- Find equipped tool
+                    local tool = localHumanoid:FindFirstChildOfClass("Tool")
+                    
+                    -- Try to find combat-related remote events/functions in tool or character
+                    local remotes = {}
+                    
+                    if tool then
+                        for _, child in ipairs(tool:GetDescendants()) do
+                            if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                                table.insert(remotes, child)
+                            end
+                        end
+                    end
+                    
+                    -- Also check character for remotes (some games have them there)
+                    for _, child in ipairs(localChar:GetDescendants()) do
+                        if (child:IsA("RemoteEvent") or child:IsA("RemoteFunction")) and not table.find(remotes, child) then
+                            table.insert(remotes, child)
+                        end
+                    end
+                    
+                    -- Get aim position with new prediction
+                    local aimPosition = GetAimPosition(LockedOnTarget.Character)
+                    if not aimPosition then
+                        aimPosition = humanoidRootPart.Position
+                    end
+                    
+                    -- Try to fire all remotes with perfect hit data
+                    for _, remote in ipairs(remotes) do
+                        pcall(function()
+                            if remote:IsA("RemoteEvent") then
+                                -- Fire with perfect hit data (using new predicted position)
+                                remote:FireServer({
+                                    Hit = humanoidRootPart,
+                                    Target = humanoid,
+                                    Position = aimPosition,
+                                    Normal = (aimPosition - Camera.CFrame.Position).Unit
+                                })
+                            elseif remote:IsA("RemoteFunction") then
+                                -- Invoke with perfect hit data (using new predicted position)
+                                remote:InvokeServer({
+                                    Hit = humanoidRootPart,
+                                    Target = humanoid,
+                                    Position = aimPosition,
+                                    Normal = (aimPosition - Camera.CFrame.Position).Unit
+                                })
+                            end
+                        end)
+                    end
+                end
+            end
+        end)
+    end
+
+    -- Lock onto the player the camera is looking at
+    local function LockOnToPlayer()
+        if LockEnabled then
+            local targetPlayer, distance = FindPlayerInSight()
+            
+            if targetPlayer then
+                LockedOnTarget = targetPlayer
+                
+                if LockedOnTarget and LockedOnTarget.Character then
+                    LockButton.Text = "Locked: " .. LockedOnTarget.Name
+                    LockButton.BackgroundColor3 = Color3.fromRGB(120, 0, 0)
+                    
+                    -- Show lock symbol
+                    LockSymbol.Visible = true
+                    
+                    -- Setup combat hook for 100% hit rate
+                    SetupCombatHook()
+                    
+                    -- Update lock symbol position and camera
+                    if TargetConnection then
+                        TargetConnection:Disconnect()
+                    end
+                    
+                    TargetConnection = RunService.RenderStepped:Connect(function()
+                        if LockedOnTarget and LockedOnTarget.Character then
+                            local humanoidRootPart = LockedOnTarget.Character:FindFirstChild("HumanoidRootPart")
+                            local humanoid = LockedOnTarget.Character:FindFirstChildOfClass("Humanoid")
+                            
+                            if humanoidRootPart then
+                                -- Get aim position with new prediction
+                                local aimPosition = GetAimPosition(LockedOnTarget.Character)
+                                if not aimPosition then
+                                    aimPosition = humanoidRootPart.Position
+                                end
+                                
+                                local position, onScreen = Camera:WorldToViewportPoint(aimPosition)
+                                if onScreen then
+                                    -- Position lock symbol above predicted position
+                                    LockSymbol.Position = UDim2.new(0, position.X, 0, position.Y - 50)
+                                    
+                                    -- Pulse effect for lock symbol
+                                    local pulse = math.sin(tick() * 5) * 0.2 + 1
+                                    LockSymbol.Size = UDim2.new(0, 40 * pulse, 0, 40 * pulse)
+                                    
+                                    -- 100% ACCURACY: Directly aim at target's predicted position (even through walls)
+                                    Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPosition)
+                                else
+                                    LockSymbol.Visible = false
+                                end
+                            else
+                                LockSymbol.Visible = false
+                            end
+                        else
+                            LockSymbol.Visible = false
+                        end
+                    end)
+                end
+            else
+                LockButton.Text = "No Target Found"
+                wait(1)
+                LockButton.Text = "kayden-cc"
+                LockButton.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+                LockSymbol.Visible = false
+                
+                if CombatHook then
+                    CombatHook:Disconnect()
+                    CombatHook = nil
+                end
+            end
+        end
+    end
+
+    -- Toggle lock mode
+    LockButton.MouseButton1Click:Connect(function()
+        LockEnabled = not LockEnabled
+        
+        if LockEnabled then
+            LockButton.Text = "Locking..."
+            LockOnToPlayer()
+        else
+            LockButton.Text = "kayden-cc"
+            LockButton.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+            LockedOnTarget = nil
+            LockSymbol.Visible = false
+            
+            if TargetConnection then
+                TargetConnection:Disconnect()
+                TargetConnection = nil
+            end
+            
+            if CombatHook then
+                CombatHook:Disconnect()
+                CombatHook = nil
+            end
+        end
+    end)
+
+    -- Quick lock with Q key
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        
+        if input.KeyCode == Enum.KeyCode.Q then
+            LockEnabled = not LockEnabled
+            
+            if LockEnabled then
+                LockButton.Text = "Locking..."
+                LockOnToPlayer()
+            else
+                LockButton.Text = "kayden-cc"
+                LockButton.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+                LockedOnTarget = nil
+                LockSymbol.Visible = false
+                
+                if TargetConnection then
+                    TargetConnection:Disconnect()
+                    TargetConnection = nil
+                end
+                
+                if CombatHook then
+                    CombatHook:Disconnect()
+                    CombatHook = nil
+                end
+            end
+        end
+    end)
+
+    print("kayden-cc UI loaded - Press the button or Q key to lock onto the closest player")
+    print("New prediction system active - X:", X, "Y:", Y, "Prediction:", Prediction, "AirOffset:", AirOffset, "FallOffset:", FallOffset)
+end
+
+-- Create the UI immediately
+CreateUI()
